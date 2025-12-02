@@ -1,20 +1,17 @@
 name: Aggregate Clash Subscriptions
-
+ 
 on:
   schedule:
-    - cron: '30 */2 * * *'  # 30 mins past of rvery 2 hour
-  workflow_dispatch:  # Manual trigger
-#  push:
-#    paths:
-#      - 'sources.txt'
-#      - 'aggregator.py'
-
+    - cron: '30 */2 * * *'  # 每2小时运行
+  workflow_dispatch:  # 手动触发
+ 
 permissions:
   contents: write
-
+ 
 jobs:
   aggregate:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     
     steps:
     - name: Checkout repository
@@ -26,6 +23,7 @@ jobs:
       uses: actions/setup-python@v4
       with:
         python-version: '3.10'
+        cache: 'pip'
     
     - name: Install dependencies
       run: |
@@ -35,10 +33,62 @@ jobs:
       env:
         MAXMIND_LICENSE_KEY: ${{ secrets.MAXMIND_LICENSE_KEY }}
       run: python aggregator.py
+      continue-on-error: false
+    
+    # ========== YAML 修复步骤 ==========
+    - name: Fix YAML syntax issues
+      run: |
+        echo "🔧 修复 YAML 特殊字符..."
+        cp clash.yaml clash.yaml.backup
+        
+        # 修复所有可能包含特殊字符的字段
+        sed -i -E "s/^([[:space:]]+password):[[:space:]]+([^'\"#]+[=:@%#]+[^#]*)$/\1: '\2'/g" clash.yaml
+        sed -i -E "s/^([[:space:]]+sni):[[:space:]]+([^'\"#]+[%:@]+[^#]*)$/\1: '\2'/g" clash.yaml
+        sed -i -E "s/^([[:space:]]+servername):[[:space:]]+([^'\"#]+[%:@]+[^#]*)$/\1: '\2'/g" clash.yaml
+        sed -i -E "s/^([[:space:]]+host):[[:space:]]+([^'\"#]+[=:@%#]+[^#]*)$/\1: '\2'/g" clash.yaml
+        sed -i -E "s/^([[:space:]]+path):[[:space:]]+([^'\"#]+[@%]+[^#]*)$/\1: '\2'/g" clash.yaml
+        
+        echo "✅ 修复完成"
+    # ==================================
+    
+    # ========== YAML 验证步骤 ==========
+    - name: Validate YAML syntax
+      run: |
+        echo "🔍 验证 YAML 语法..."
+        python3 << 'EOF'
+import yaml
+import sys
+ 
+try:
+    with open('clash.yaml', 'r') as f:
+        data = yaml.safe_load(f)
+    
+    proxy_count = len(data.get('proxies', []))
+    print(f"✅ YAML 语法正确")
+    print(f"📊 代理节点数: {proxy_count}")
+    
+    if proxy_count == 0:
+        print("⚠️  警告: 没有有效代理节点")
+        sys.exit(1)
+    
+    print("✅ 验证通过")
+    sys.exit(0)
+    
+except yaml.YAMLError as e:
+    print(f"❌ YAML 语法错误: {e}")
+    if hasattr(e, 'problem_mark'):
+        mark = e.problem_mark
+        print(f"   位置: 第 {mark.line + 1} 行")
+    sys.exit(1)
+except Exception as e:
+    print(f"❌ 验证失败: {e}")
+    sys.exit(1)
+EOF
+    # ==================================
     
     - name: Commit and push if changed
       run: |
         git config --global user.email "action@github.com"
         git config --global user.name "GitHub Action"
         git add clash.yaml
-        git diff --staged --quiet || (git commit -m "🔄 Update proxies [Subconverter + Clash]" && git push)
+        git diff --staged --quiet || (git commit -m "🔄 Update proxies [$(date +'%Y-%m-%d %H:%M')]" && git push)
